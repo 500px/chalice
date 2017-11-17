@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import shutil
+import uuid
 
 import botocore.session
 import pytest
@@ -16,13 +17,30 @@ from chalice.deploy.deployer import ChaliceDeploymentError
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.join(CURRENT_DIR, 'testapp')
 APP_FILE = os.path.join(PROJECT_DIR, 'app.py')
+RANDOM_APP_NAME = 'smoketest-%s' % str(uuid.uuid4())
+
+
+def retry(max_attempts, delay):
+    def _create_wrapped_retry_function(function):
+        def _wrapped_with_retry(*args, **kwargs):
+            for _ in range(max_attempts):
+                result = function(*args, **kwargs)
+                if result is not None:
+                    return result
+                time.sleep(delay)
+            raise RuntimeError("Exhausted max retries of %s for function: %s"
+                               % (max_attempts, function))
+        return _wrapped_with_retry
+    return _create_wrapped_retry_function
 
 
 class SmokeTestApplication(object):
 
-    # Number of seconds to wait after redeploy before running
-    # tests.
+    # Number of seconds to wait after redeploy before starting
+    # to poll for successful 200.
     _REDEPLOY_SLEEP = 20
+    # Seconds to wait between poll attempts after redeploy.
+    _POLLING_DELAY = 5
 
     def __init__(self, url, deployed_values, stage_name, app_name,
                  app_dir):
@@ -69,6 +87,18 @@ class SmokeTestApplication(object):
         self._has_redeployed = True
         # Give it settling time before running more tests.
         time.sleep(self._REDEPLOY_SLEEP)
+        self._wait_for_stablize()
+
+    @retry(max_attempts=10, delay=5)
+    def _wait_for_stablize(self):
+        # After a deployment we sometimes need to wait for
+        # API Gateway to propagate all of its changes.
+        # We're going to give it num_attempts to give us a
+        # 200 response before failing.
+        try:
+            return self.get_json('/')
+        except requests.exceptions.HTTPError:
+            pass
 
     def _clear_app_import(self):
         # Now that we're using `import` instead of `exec` we need
@@ -77,13 +107,35 @@ class SmokeTestApplication(object):
         del sys.modules['app']
 
 
+@pytest.fixture
+def apig_client():
+    s = botocore.session.get_session()
+    return s.create_client('apigateway')
+
+
 @pytest.fixture(scope='module')
 def smoke_test_app(tmpdir_factory):
-    tmpdir = str(tmpdir_factory.mktemp('smoketestapp'))
+    # We can't use the monkeypatch fixture here because this is a module scope
+    # fixture and monkeypatch is a function scoped fixture.
+    os.environ['APP_NAME'] = RANDOM_APP_NAME
+    tmpdir = str(tmpdir_factory.mktemp(RANDOM_APP_NAME))
     OSUtils().copytree(PROJECT_DIR, tmpdir)
+    _inject_app_name(tmpdir)
     application = _deploy_app(tmpdir)
     yield application
     _delete_app(application)
+    os.environ.pop('APP_NAME')
+
+
+def _inject_app_name(dirname):
+    config_filename = os.path.join(dirname, '.chalice', 'config.json')
+    with open(config_filename) as f:
+        data = json.load(f)
+    data['app_name'] = RANDOM_APP_NAME
+    data['stages']['dev']['environment_variables']['APP_NAME'] = \
+        RANDOM_APP_NAME
+    with open(config_filename, 'w') as f:
+        f.write(json.dumps(data, indent=2))
 
 
 def _deploy_app(temp_dirname):
@@ -103,7 +155,7 @@ def _deploy_app(temp_dirname):
         url=url,
         deployed_values=deployed,
         stage_name='dev',
-        app_name='smoketestapp',
+        app_name=RANDOM_APP_NAME,
         app_dir=temp_dirname,
     )
     record_deployed_values(
@@ -113,20 +165,25 @@ def _deploy_app(temp_dirname):
     return application
 
 
-def _deploy_with_retries(deployer, config, max_attempts=10):
-    for i in range(max_attempts):
-        try:
-            deployed_stages = deployer.deploy(config)
-            return deployed_stages
-        except ChaliceDeploymentError as e:
-            # API Gateway aggressively throttles deployments.
-            # If we run into this case, we just wait and try
-            # again.
-            error_code = e.original_error.response['Error']['Code']
-            if error_code != 'TooManyRequestsException':
-                raise
-            time.sleep(20)
-    raise RuntimeError("Failed to deploy app after %s attempts" % max_attempts)
+@retry(max_attempts=10, delay=20)
+def _deploy_with_retries(deployer, config):
+    try:
+        deployed_stages = deployer.deploy(config)
+        return deployed_stages
+    except ChaliceDeploymentError as e:
+        # API Gateway aggressively throttles deployments.
+        # If we run into this case, we just wait and try
+        # again.
+        error_code = _get_error_code_from_exception(e)
+        if error_code != 'TooManyRequestsException':
+            raise
+
+
+def _get_error_code_from_exception(exception):
+    error_response = getattr(exception.original_error, 'response', None)
+    if error_response is None:
+        return None
+    return error_response.get('Error', {}).get('Code')
 
 
 def _delete_app(application):
@@ -158,6 +215,41 @@ def test_can_have_nested_routes(smoke_test_app):
 def test_supports_path_params(smoke_test_app):
     assert smoke_test_app.get_json('/path/foo') == {'path': 'foo'}
     assert smoke_test_app.get_json('/path/bar') == {'path': 'bar'}
+
+
+def test_path_params_mapped_in_api(smoke_test_app, apig_client):
+    # Use the API Gateway API to ensure that path parameters
+    # are modeled as such.  Otherwise this will break
+    # SDK generation and any future features that depend
+    # on params.  We could try to verify the generated
+    # javascript SDK looks ok.  Instead we're going to
+    # query the resources we've created in API gateway
+    # and make sure requestParameters are present.
+    rest_api_id = smoke_test_app.rest_api_id
+    resource_id = _get_resource_id(apig_client, rest_api_id)
+    method_config = apig_client.get_method(
+        restApiId=rest_api_id,
+        resourceId=resource_id,
+        httpMethod='GET'
+    )
+    assert 'requestParameters' in method_config
+    assert method_config['requestParameters'] == {
+        'method.request.path.name': True
+    }
+
+
+@retry(max_attempts=12, delay=6)
+def _get_resource_id(apig_client, rest_api_id):
+    # This is the resource id for the '/path/{name}'
+    # route.  As far as I know this is the best way to get
+    # this id.
+    matches = [
+        resource for resource in
+        apig_client.get_resources(restApiId=rest_api_id)['items']
+        if resource['path'] == '/path/{name}'
+    ]
+    if matches:
+        return matches[0]['id']
 
 
 def test_supports_post(smoke_test_app):
@@ -246,6 +338,7 @@ def test_can_round_trip_binary(smoke_test_app):
                                  'Accept': 'application/octet-stream',
                              },
                              data=bin_data)
+    response.raise_for_status()
     assert response.content == bin_data
 
 
@@ -370,6 +463,13 @@ def test_can_use_shared_auth(smoke_test_app):
     context = response.json()['context']
     assert 'authorizer' in context
     assert context['authorizer']['foo'] == 'bar'
+
+
+def test_empty_raw_body(smoke_test_app):
+    url = smoke_test_app.url + '/repr-raw-body'
+    response = requests.post(url)
+    response.raise_for_status()
+    assert response.json() == {'repr-raw-body': ''}
 
 
 @pytest.mark.on_redeploy

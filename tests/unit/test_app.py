@@ -5,9 +5,33 @@ import json
 
 import pytest
 from pytest import fixture
+import hypothesis.strategies as st
+from hypothesis import given, assume
+import six
+
+
 from chalice import app
 from chalice import NotFoundError
+from chalice.app import APIGateway, Request, Response, handle_decimals
 from chalice import __version__ as chalice_version
+
+
+# These are used to generate sample data for hypothesis tests.
+STR_MAP = st.dictionaries(st.text(), st.text())
+HTTP_METHOD = st.sampled_from(['GET', 'POST', 'PUT', 'PATCH',
+                               'OPTIONS', 'HEAD', 'DELETE'])
+HTTP_BODY = st.none() | st.text()
+HTTP_REQUEST = st.fixed_dictionaries({
+    'query_params': STR_MAP,
+    'headers': STR_MAP,
+    'uri_params': STR_MAP,
+    'method': HTTP_METHOD,
+    'body': HTTP_BODY,
+    'context': STR_MAP,
+    'stage_vars': STR_MAP,
+    'is_base64_encoded': st.booleans(),
+})
+BINARY_TYPES = APIGateway().binary_types
 
 
 class FakeLambdaContextIdentity(object):
@@ -51,46 +75,6 @@ def create_request_with_content_type(content_type):
         {}, {'Content-Type': content_type}, {}, 'GET',
         body, {}, {}, False
     )
-
-
-def create_event(uri, method, path, content_type='application/json'):
-    return {
-        'requestContext': {
-            'httpMethod': method,
-            'resourcePath': uri,
-        },
-        'headers': {
-            'Content-Type': content_type,
-        },
-        'pathParameters': path,
-        'queryStringParameters': {},
-        'body': "",
-        'stageVariables': {},
-    }
-
-
-def create_empty_header_event(uri, method, path,
-                              content_type='application/json'):
-    return {
-        'requestContext': {
-            'httpMethod': method,
-            'resourcePath': uri,
-        },
-        'headers': None,
-        'pathParameters': path,
-        'queryStringParameters': {},
-        'body': "",
-        'stageVariables': {},
-    }
-
-
-def create_event_with_body(body, uri='/', method='POST',
-                           content_type='application/json'):
-    event = create_event(uri, method, {}, content_type)
-    if content_type == 'application/json':
-        body = json.dumps(body)
-    event['body'] = body
-    return event
 
 
 def assert_response_body_is(response, body):
@@ -221,13 +205,13 @@ def test_error_on_unknown_event(sample_app):
     assert json_response_body(raw_response)['Code'] == 'InternalServerError'
 
 
-def test_can_route_api_call_to_view_function(sample_app):
+def test_can_route_api_call_to_view_function(sample_app, create_event):
     event = create_event('/index', 'GET', {})
     response = sample_app(event, context=None)
     assert_response_body_is(response, {'hello': 'world'})
 
 
-def test_can_call_to_dict_on_current_request(sample_app):
+def test_can_call_to_dict_on_current_request(sample_app, create_event):
     @sample_app.route('/todict')
     def todict():
         return sample_app.current_request.to_dict()
@@ -243,34 +227,46 @@ def test_can_call_to_dict_on_current_request(sample_app):
     assert isinstance(json.loads(json.dumps(response)), dict)
 
 
-def test_will_pass_captured_params_to_view(sample_app):
+def test_request_to_dict_does_not_contain_internal_attrs(sample_app,
+                                                         create_event):
+    @sample_app.route('/todict')
+    def todict():
+        return sample_app.current_request.to_dict()
+    event = create_event('/todict', 'GET', {})
+    response = json_response_body(sample_app(event, context=None))
+    internal_attrs = [key for key in response if key.startswith('_')]
+    assert not internal_attrs
+
+
+def test_will_pass_captured_params_to_view(sample_app, create_event):
     event = create_event('/name/{name}', 'GET', {'name': 'james'})
     response = sample_app(event, context=None)
     response = json_response_body(response)
     assert response == {'provided-name': 'james'}
 
 
-def test_error_on_unsupported_method(sample_app):
+def test_error_on_unsupported_method(sample_app, create_event):
     event = create_event('/name/{name}', 'POST', {'name': 'james'})
     raw_response = sample_app(event, context=None)
     assert raw_response['statusCode'] == 405
     assert json_response_body(raw_response)['Code'] == 'MethodNotAllowedError'
 
 
-def test_error_on_unsupported_method_gives_feedback_on_method(sample_app):
+def test_error_on_unsupported_method_gives_feedback_on_method(sample_app,
+                                                              create_event):
     method = 'POST'
     event = create_event('/name/{name}', method, {'name': 'james'})
     raw_response = sample_app(event, context=None)
     assert 'POST' in json_response_body(raw_response)['Message']
 
 
-def test_no_view_function_found(sample_app):
+def test_no_view_function_found(sample_app, create_event):
     bad_path = create_event('/noexist', 'GET', {})
     with pytest.raises(app.ChaliceError):
         sample_app(bad_path, context=None)
 
 
-def test_can_access_context():
+def test_can_access_context(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -286,7 +282,7 @@ def test_can_access_context():
     assert result == serialized_lambda_context
 
 
-def test_can_access_raw_body():
+def test_can_access_raw_body(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -300,7 +296,7 @@ def test_can_access_raw_body():
     assert result == {'rawbody': '{"hello": "world"}'}
 
 
-def test_raw_body_cache_returns_same_result():
+def test_raw_body_cache_returns_same_result(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -320,7 +316,7 @@ def test_raw_body_cache_returns_same_result():
     assert result['rawbody'] == result['rawbody2']
 
 
-def test_can_have_views_of_same_route_but_different_methods():
+def test_can_have_views_of_same_route_but_different_methods(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index', methods=['GET'])
@@ -356,7 +352,7 @@ def test_error_on_duplicate_route_methods():
             return {'foo': 'bar'}
 
 
-def test_json_body_available_with_right_content_type():
+def test_json_body_available_with_right_content_type(create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', methods=['POST'])
@@ -371,7 +367,7 @@ def test_json_body_available_with_right_content_type():
     assert result == {'foo': 'bar'}
 
 
-def test_cant_access_json_body_with_wrong_content_type():
+def test_cant_access_json_body_with_wrong_content_type(create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', methods=['POST'], content_types=['application/xml'])
@@ -388,7 +384,7 @@ def test_cant_access_json_body_with_wrong_content_type():
     assert raw_body == '<Message>hello</Message>'
 
 
-def test_json_body_available_on_multiple_content_types():
+def test_json_body_available_on_multiple_content_types(create_event_with_body):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', methods=['POST'],
@@ -415,7 +411,8 @@ def test_json_body_available_on_multiple_content_types():
     assert raw_body == '{"foo": "bar"}'
 
 
-def test_json_body_available_with_lowercase_content_type_key():
+def test_json_body_available_with_lowercase_content_type_key(
+        create_event_with_body):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', methods=['POST'])
@@ -441,7 +438,7 @@ def test_content_types_must_be_lists():
             return {'foo': 'bar'}
 
 
-def test_content_type_validation_raises_error_on_unknown_types():
+def test_content_type_validation_raises_error_on_unknown_types(create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', methods=['POST'], content_types=['application/xml'])
@@ -457,7 +454,7 @@ def test_content_type_validation_raises_error_on_unknown_types():
     assert 'application/bad-xml' in json_response['Message']
 
 
-def test_content_type_with_charset():
+def test_content_type_with_charset(create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/', content_types=['application/json'])
@@ -469,7 +466,7 @@ def test_content_type_with_charset():
     assert response == {'foo': 'bar'}
 
 
-def test_can_return_response_object():
+def test_can_return_response_object(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -483,7 +480,7 @@ def test_can_return_response_object():
                         'headers': {'Content-Type': 'application/json'}}
 
 
-def test_headers_have_basic_validation():
+def test_headers_have_basic_validation(create_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -499,7 +496,7 @@ def test_headers_have_basic_validation():
     assert json.loads(response['body'])['Code'] == 'InternalServerError'
 
 
-def test_empty_headers_have_basic_validation():
+def test_empty_headers_have_basic_validation(create_empty_header_event):
     demo = app.Chalice('app-name')
 
     @demo.route('/index')
@@ -512,7 +509,7 @@ def test_empty_headers_have_basic_validation():
     assert response['statusCode'] == 200
 
 
-def test_no_content_type_is_still_allowed():
+def test_no_content_type_is_still_allowed(create_event):
     # When the content type validation happens in API gateway, it appears
     # to assume a default of application/json, so the chalice handler needs
     # to emulate that behavior.
@@ -530,7 +527,7 @@ def test_no_content_type_is_still_allowed():
     assert json_response == {'success': True}
 
 
-def test_can_base64_encode_binary_media_types_bytes():
+def test_can_base64_encode_binary_media_types_bytes(create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/index')
@@ -549,7 +546,8 @@ def test_can_base64_encode_binary_media_types_bytes():
     assert response['headers']['Content-Type'] == 'application/octet-stream'
 
 
-def test_can_return_text_even_with_binary_content_type_configured():
+def test_can_return_text_even_with_binary_content_type_configured(
+        create_event):
     demo = app.Chalice('demo-app')
 
     @demo.route('/index')
@@ -604,7 +602,7 @@ def test_route_inequality(view_function):
     assert not a == b
 
 
-def test_exceptions_raised_as_chalice_errors(sample_app):
+def test_exceptions_raised_as_chalice_errors(sample_app, create_event):
 
     @sample_app.route('/error')
     def raise_error():
@@ -620,7 +618,7 @@ def test_exceptions_raised_as_chalice_errors(sample_app):
     assert raw_response['statusCode'] == 500
 
 
-def test_original_exception_raised_in_debug_mode(sample_app):
+def test_original_exception_raised_in_debug_mode(sample_app, create_event):
     sample_app.debug = True
 
     @sample_app.route('/error')
@@ -636,7 +634,8 @@ def test_original_exception_raised_in_debug_mode(sample_app):
     assert 'You will see this error' in response['body']
 
 
-def test_chalice_view_errors_propagate_in_non_debug_mode(sample_app):
+def test_chalice_view_errors_propagate_in_non_debug_mode(sample_app,
+                                                         create_event):
     @sample_app.route('/notfound')
     def notfound():
         raise NotFoundError("resource not found")
@@ -647,7 +646,7 @@ def test_chalice_view_errors_propagate_in_non_debug_mode(sample_app):
     assert json_response_body(raw_response)['Code'] == 'NotFoundError'
 
 
-def test_chalice_view_errors_propagate_in_debug_mode(sample_app):
+def test_chalice_view_errors_propagate_in_debug_mode(sample_app, create_event):
     @sample_app.route('/notfound')
     def notfound():
         raise NotFoundError("resource not found")
@@ -668,7 +667,7 @@ def test_case_insensitive_mapping():
     assert repr({'header': 'Value'}) in repr(mapping)
 
 
-def test_unknown_kwargs_raise_error(sample_app):
+def test_unknown_kwargs_raise_error(sample_app, create_event):
     with pytest.raises(TypeError):
         @sample_app.route('/foo', unknown_kwargs='foo')
         def badkwargs():
@@ -721,7 +720,7 @@ def test_json_body_available_when_content_type_matches(content_type, is_json):
         assert request.json_body is None
 
 
-def test_can_receive_binary_data():
+def test_can_receive_binary_data(create_event_with_body):
     content_type = 'application/octet-stream'
     demo = app.Chalice('demo-app')
 
@@ -743,7 +742,8 @@ def test_can_receive_binary_data():
     assert response['body'] == body
 
 
-def test_cannot_receive_base64_string_with_binary_response():
+def test_cannot_receive_base64_string_with_binary_response(
+        create_event_with_body):
     content_type = 'application/octet-stream'
     demo = app.Chalice('demo-app')
 
@@ -1238,7 +1238,7 @@ def test_aws_execution_env_set():
     )
 
 
-def test_can_use_out_of_order_args():
+def test_can_use_out_of_order_args(create_event):
     demo = app.Chalice('demo-app')
 
     # Note how the url params and function args are out of order.
@@ -1278,3 +1278,64 @@ def test_debug_mode_changes_log_level():
     test_app.debug = True
     assert test_app.debug is True
     assert test_app.log.getEffectiveLevel() == logging.DEBUG
+
+
+def test_raw_body_is_none_if_body_is_none():
+    misc_kwargs = {
+        'query_params': {},
+        'headers': {},
+        'uri_params': {},
+        'method': 'GET',
+        'context': {},
+        'stage_vars': {},
+        'is_base64_encoded': False,
+    }
+    request = app.Request(body=None, **misc_kwargs)
+    assert request.raw_body == b''
+
+
+@given(http_request_kwargs=HTTP_REQUEST)
+def test_http_request_to_dict_is_json_serializable(http_request_kwargs):
+    # We have to do some slight pre-preocessing here
+    # to maintain preconditions.  If the
+    # is_base64_encoded arg is True, we'll
+    # base64 encode the body.  We assume API Gateway
+    # upholds this precondition.
+    is_base64_encoded = http_request_kwargs['is_base64_encoded']
+    if is_base64_encoded:
+        # Confirmed that if you send an empty body,
+        # API Gateway will always say the body is *not*
+        # base64 encoded.
+        assume(http_request_kwargs['body'] is not None)
+        body = base64.b64encode(
+            http_request_kwargs['body'].encode('utf-8'))
+        http_request_kwargs['body'] = body.decode('ascii')
+
+    request = Request(**http_request_kwargs)
+    assert isinstance(request.raw_body, bytes)
+    request_dict = request.to_dict()
+    # We should always be able to dump the request dict
+    # to JSON.
+    assert json.dumps(request_dict, default=handle_decimals)
+
+
+@given(body=st.text(), headers=STR_MAP,
+       status_code=st.integers(min_value=200, max_value=599))
+def test_http_response_to_dict(body, headers, status_code):
+    r = Response(body=body, headers=headers, status_code=status_code)
+    serialized = r.to_dict()
+    assert 'headers' in serialized
+    assert 'statusCode' in serialized
+    assert 'body' in serialized
+    assert isinstance(serialized['body'], six.string_types)
+
+
+@given(body=st.binary(), content_type=st.sampled_from(BINARY_TYPES))
+def test_handles_binary_responses(body, content_type):
+    r = Response(body=body, headers={'Content-Type': content_type})
+    serialized = r.to_dict(BINARY_TYPES)
+    # A binary response should always result in the
+    # response being base64 encoded.
+    assert serialized['isBase64Encoded']
+    assert isinstance(serialized['body'], six.string_types)
+    assert isinstance(base64.b64decode(serialized['body']), bytes)

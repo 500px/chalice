@@ -3,7 +3,6 @@
 Contains commands for deploying chalice.
 
 """
-import json
 import logging
 import os
 import sys
@@ -24,7 +23,8 @@ from chalice.utils import create_zip_file
 from chalice.utils import record_deployed_values
 from chalice.utils import remove_stage_from_deployed_values
 from chalice.deploy.deployer import validate_python_version
-from chalice.utils import getting_started_prompt, UI
+from chalice.deploy.deployer import validate_routes
+from chalice.utils import getting_started_prompt, UI, serialize_to_json
 from chalice.constants import CONFIG_VERSION, TEMPLATE_APP, GITIGNORE
 from chalice.constants import DEFAULT_STAGE_NAME
 from chalice.constants import DEFAULT_APIGATEWAY_STAGE_NAME
@@ -47,7 +47,7 @@ def create_new_project_skeleton(project_name, profile=None):
     if profile is not None:
         cfg['profile'] = profile
     with open(config, 'w') as f:
-        f.write(json.dumps(cfg, indent=2))
+        f.write(serialize_to_json(cfg))
     with open(os.path.join(project_name, 'requirements.txt'), 'w'):
         pass
     with open(os.path.join(project_name, 'app.py'), 'w') as f:
@@ -75,31 +75,38 @@ def cli(ctx, project_dir, debug=False):
 
 
 @cli.command()
+@click.option('--host', default='127.0.0.1')
 @click.option('--port', default=8000, type=click.INT)
+@click.option('--stage', default=DEFAULT_STAGE_NAME,
+              help='Name of the Chalice stage for the local server to use.')
 @click.pass_context
-def local(ctx, port=8000):
-    # type: (click.Context, int) -> None
+def local(ctx, host='127.0.0.1', port=8000, stage=DEFAULT_STAGE_NAME):
+    # type: (click.Context, str, int, str) -> None
     factory = ctx.obj['factory']  # type: CLIFactory
-    run_local_server(factory, port, os.environ)
+    run_local_server(factory, host, port, stage, os.environ)
 
 
-def run_local_server(factory, port, env):
-    # type: (CLIFactory, int, MutableMapping) -> None
-    # We should add a stage argument, env vars can vary
-    # by stage.
-    config = factory.create_config_obj()
+def run_local_server(factory, host, port, stage, env):
+    # type: (CLIFactory, str, int, str, MutableMapping) -> None
+    config = factory.create_config_obj(
+        chalice_stage_name=stage
+    )
     # We only load the chalice app after loading the config
     # so we can set any env vars needed before importing the
     # app.
     env.update(config.environment_variables)
     app_obj = factory.load_chalice_app()
+    # Check that `chalice deploy` would let us deploy these routes, otherwise
+    # there is no point in testing locally.
+    routes = config.chalice_app.routes
+    validate_routes(routes)
     # When running `chalice local`, a stdout logger is configured
     # so you'll see the same stdout logging as you would when
     # running in lambda.  This is configuring the root logger.
     # The app-specific logger (app.log) will still continue
     # to work.
     logging.basicConfig(stream=sys.stdout)
-    server = factory.create_local_server(app_obj, port)
+    server = factory.create_local_server(app_obj, config, host, port)
     server.serve_forever()
 
 
@@ -154,10 +161,12 @@ def delete(ctx, profile, stage):
               default=False,
               help='Controls whether or not lambda log messages are included.')
 @click.option('--stage', default=DEFAULT_STAGE_NAME)
+@click.option('--profile', help='The profile to use for fetching logs.')
 @click.pass_context
-def logs(ctx, num_entries, include_lambda_messages, stage):
-    # type: (click.Context, int, bool, str) -> None
+def logs(ctx, num_entries, include_lambda_messages, stage, profile):
+    # type: (click.Context, int, bool, str, str) -> None
     factory = ctx.obj['factory']  # type: CLIFactory
+    factory.profile = profile
     config = factory.create_config_obj(stage, False)
     deployed = config.deployed_resources(stage)
     if deployed is not None:
@@ -183,7 +192,7 @@ def gen_policy(ctx, filename):
     with open(filename) as f:
         contents = f.read()
         generated = policy.policy_from_source_code(contents)
-        click.echo(json.dumps(generated, indent=2))
+        click.echo(serialize_to_json(generated))
 
 
 @cli.command('new-project')
@@ -301,7 +310,7 @@ def generate_pipeline(ctx, filename):
     config = factory.create_config_obj()
     output = create_pipeline_template(config)
     with open(filename, 'w') as f:
-        f.write(json.dumps(output, indent=2, separators=(',', ': ')))
+        f.write(serialize_to_json(output))
 
 
 def main():

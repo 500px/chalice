@@ -9,7 +9,7 @@ import decimal
 import base64
 from collections import defaultdict, Mapping
 
-__version__ = '1.0.0'
+__version__ = '1.0.4'
 
 # Implementation note:  This file is intended to be a standalone file
 # that gets copied into the lambda deployment package.  It has no dependencies
@@ -82,6 +82,10 @@ class MethodNotAllowedError(ChaliceViewError):
     STATUS_CODE = 405
 
 
+class RequestTimeoutError(ChaliceViewError):
+    STATUS_CODE = 408
+
+
 class ConflictError(ChaliceViewError):
     STATUS_CODE = 409
 
@@ -96,6 +100,7 @@ ALL_ERRORS = [
     NotFoundError,
     UnauthorizedError,
     ForbiddenError,
+    RequestTimeoutError,
     ConflictError,
     TooManyRequestsError]
 
@@ -265,7 +270,7 @@ class Request(object):
         #: only be set if the Content-Type header is application/json,
         #: which is the default content type value in chalice.
         self._json_body = None
-        self._raw_body = None
+        self._raw_body = b''
         self.context = context
         self.stage_vars = stage_vars
 
@@ -277,7 +282,7 @@ class Request(object):
 
     @property
     def raw_body(self):
-        if self._raw_body is None:
+        if not self._raw_body and self._body is not None:
             if self._is_base64_encoded:
                 self._raw_body = self._base64decode(self._body)
             elif not isinstance(self._body, bytes):
@@ -294,7 +299,9 @@ class Request(object):
             return self._json_body
 
     def to_dict(self):
-        copied = self.__dict__.copy()
+        # Don't copy internal attributes.
+        copied = {k: v for k, v in self.__dict__.items()
+                  if not k.startswith('_')}
         # We want the output of `to_dict()` to be
         # JSON serializable, so we need to remove the CaseInsensitive dict.
         copied['headers'] = dict(copied['headers'])

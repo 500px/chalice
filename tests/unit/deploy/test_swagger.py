@@ -1,4 +1,4 @@
-from chalice.deploy.swagger import SwaggerGenerator
+from chalice.deploy.swagger import SwaggerGenerator, CFNSwaggerGenerator
 from chalice import CORSConfig
 from chalice.app import CustomAuthorizer, CognitoUserPoolAuthorizer
 from chalice.app import IAMAuthorizer, Chalice
@@ -64,9 +64,8 @@ def test_can_add_url_captures_to_params(sample_app, swagger_gen):
 
     doc = swagger_gen.generate_swagger(sample_app)
     single_method = doc['paths']['/path/{capture}']['get']
-    apig_integ = single_method['x-amazon-apigateway-integration']
-    assert 'parameters' in apig_integ
-    assert apig_integ['parameters'] == [
+    assert 'parameters' in single_method
+    assert single_method['parameters'] == [
         {'name': "capture", "in": "path", "required": True, "type": "string"}
     ]
 
@@ -313,6 +312,22 @@ def test_can_use_authorizer_object(sample_app, swagger_gen):
     }
 
 
+def test_can_use_api_key_and_authorizers(sample_app, swagger_gen):
+    authorizer = CustomAuthorizer(
+        'MyAuth', authorizer_uri='auth-uri', header='Authorization')
+
+    @sample_app.route('/auth', authorizer=authorizer, api_key_required=True)
+    def auth():
+        return {'foo': 'bar'}
+
+    doc = swagger_gen.generate_swagger(sample_app)
+    single_method = doc['paths']['/auth']['get']
+    assert single_method.get('security') == [
+        {'api_key': []},
+        {'MyAuth': []},
+    ]
+
+
 def test_can_use_iam_authorizer_object(sample_app, swagger_gen):
     authorizer = IAMAuthorizer()
 
@@ -456,5 +471,42 @@ def test_will_default_to_function_name_for_auth(sample_app):
             'authorizerResultTtlInSeconds': 10,
             'authorizerUri': ('arn:aws:apigateway:us-west-2:lambda:path'
                               '/2015-03-31/functions/auth_arn/invocations'),
+        }
+    }
+
+
+def test_will_custom_auth_with_cfn(sample_app):
+    swagger_gen = CFNSwaggerGenerator(
+        region='us-west-2',
+        deployed_resources={}
+    )
+
+    # No "name=" kwarg provided should default
+    # to a name of "auth".
+    @sample_app.authorizer(ttl_seconds=10, execution_role='arn:role')
+    def auth(auth_request):
+        pass
+
+    @sample_app.route('/auth', authorizer=auth)
+    def foo():
+        pass
+
+    doc = swagger_gen.generate_swagger(sample_app)
+    assert 'securityDefinitions' in doc
+    assert doc['securityDefinitions']['auth'] == {
+        'in': 'header',
+        'name': 'Authorization',
+        'type': 'apiKey',
+        'x-amazon-apigateway-authtype': 'custom',
+        'x-amazon-apigateway-authorizer': {
+            'type': 'token',
+            'authorizerCredentials': 'arn:role',
+            'authorizerResultTtlInSeconds': 10,
+            'authorizerUri': {
+                'Fn::Sub': (
+                    'arn:aws:apigateway:${AWS::Region}:lambda:path'
+                    '/2015-03-31/functions/${authfa53.Arn}/invocations'
+                )
+            }
         }
     }

@@ -169,6 +169,24 @@ def test_can_deploy(runner, mock_cli_factory, mock_deployer):
             assert data == deployed_values
 
 
+def test_does_deploy_with_default_api_gateway_stage_name(
+        runner, mock_cli_factory, mock_deployer):
+    with runner.isolated_filesystem():
+        cli.create_new_project_skeleton('testproject')
+        os.chdir('testproject')
+        # This isn't perfect as we're assuming we know how to
+        # create the config_obj like the deploy() command does,
+        # it should give us more confidence that the api gateway
+        # stage defaults are still working.
+        cli_factory = factory.CLIFactory('.')
+        config = cli_factory.create_config_obj(
+            chalice_stage_name='dev',
+            autogen_policy=None,
+            api_gateway_stage=None
+        )
+        assert config.api_gateway_stage == DEFAULT_APIGATEWAY_STAGE_NAME
+
+
 def test_can_delete(runner, mock_cli_factory, mock_deployer):
     deployed_values = {
         'dev': {
@@ -307,3 +325,15 @@ def test_env_vars_set_in_local(runner, mock_cli_factory,
         _run_cli_command(runner, cli.local, [],
                          cli_factory=mock_cli_factory)
         assert actual_env['foo'] == 'bar'
+
+
+def test_can_specify_profile_for_logs(runner, mock_cli_factory):
+    with runner.isolated_filesystem():
+        cli.create_new_project_skeleton('testproject')
+        os.chdir('testproject')
+        result = _run_cli_command(
+            runner, cli.logs, ['--profile', 'my-profile'],
+            cli_factory=mock_cli_factory
+        )
+        assert result.exit_code == 0
+        assert mock_cli_factory.profile == 'my-profile'

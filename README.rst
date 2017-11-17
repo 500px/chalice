@@ -15,8 +15,8 @@ Python Serverless Microframework for AWS
    :target: https://codecov.io/github/aws/chalice
    :alt: codecov.io
 
-The python serverless microframework for AWS allows you to quickly create and
-deploy applications that use Amazon API Gateway and AWS Lambda.
+Chalice is a python serverless microframework for AWS. It allows you to quickly
+create and deploy applications that use Amazon API Gateway and AWS Lambda.
 It provides:
 
 * A command line tool for creating, deploying, and managing your app
@@ -604,7 +604,7 @@ set for you.  This value is the parsed JSON body.
 
 You can also configure a view function to support other
 content types.  You can do this by specifying the
-``content_types`` paramter value to your ``app.route``
+``content_types`` parameter value to your ``app.route``
 function.  This parameter is a list of acceptable content
 types.  Here's an example of this feature:
 
@@ -690,7 +690,7 @@ Tutorial: Customizing the HTTP Response
 
 The return value from a chalice view function is serialized as JSON as the
 response body returned back to the caller.  This makes it easy to create
-rest APIs that return JSON resonse bodies.
+rest APIs that return JSON response bodies.
 
 Chalice allows you to control this behavior by returning an instance of
 a chalice specific ``Response`` class.  This behavior allows you to:
@@ -798,13 +798,13 @@ There's a couple of things to keep in mind when enabling cors for a view:
   origin to the ``CORSConfig`` object. If you need to supply multiple origins
   you will need to define a custom handler for it that accepts ``OPTIONS``
   requests and matches the ``Origin`` header against a whitelist of origins.
-  If the match is succssful then return just their ``Origin`` back to them
+  If the match is successful then return just their ``Origin`` back to them
   in the ``Access-Control-Allow-Origin`` header.
 * Every view function must explicitly enable CORS support.
 
 The last point will change in the future.  See
 `this issue
-<https://github.com/awslabs/chalice/issues/70#issuecomment-248787037>`_
+<https://github.com/aws/chalice/issues/70#issuecomment-248787037>`_
 for more information.
 
 
@@ -1103,7 +1103,7 @@ Feedback
 
 We'also love to hear from you.  Please create any Github issues for
 additional features you'd like to see over at
-https://github.com/awslabs/chalice/issues.  You can also chat with us
+https://github.com/aws/chalice/issues.  You can also chat with us
 on gitter: https://gitter.im/awslabs/chalice
 
 
@@ -1147,3 +1147,6 @@ Related Projects
   on AWS Lambda and API Gateway.
 * `claudia <https://github.com/claudiajs/claudia>`__ - Deploy node.js projects
   to AWS Lambda and API Gateway.
+* `Domovoi <https://github.com/kislyuk/domovoi>`_ - An extension to Chalice that
+  handles a variety of AWS Lambda event sources such as SNS push notifications,
+  S3 events, and Step Functions state machines.

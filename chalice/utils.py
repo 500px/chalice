@@ -1,21 +1,38 @@
+import io
 import os
 import zipfile
 import json
 import contextlib
+import hashlib
 import tempfile
+import re
 import shutil
 import sys
 import tarfile
 
 import click
 from typing import IO, Dict, List, Any, Tuple, Iterator, BinaryIO  # noqa
-from typing import Optional  # noqa
+from typing import Optional, Union  # noqa
+from typing import MutableMapping  # noqa
 
 from chalice.constants import WELCOME_PROMPT
 
 
 class AbortedError(Exception):
     pass
+
+
+def to_cfn_resource_name(name):
+    # type: (str) -> str
+    """Transform a name to a valid cfn name.
+
+    This transform ensures that only alphanumeric characters are used
+    and prevent collisions by appending the hash of the original name.
+    """
+    alphanumeric_only_name = re.sub(r'[^A-Za-z0-9]+', '', name)
+    return ''.join([
+        alphanumeric_only_name, hashlib.md5(
+            name.encode('utf-8')).hexdigest()[:4]])
 
 
 def remove_stage_from_deployed_values(key, filename):
@@ -32,7 +49,7 @@ def remove_stage_from_deployed_values(key, filename):
     try:
         del final_values[key]
         with open(filename, 'wb') as f:
-            data = json.dumps(final_values, indent=2, separators=(',', ': '))
+            data = serialize_to_json(final_values)
             f.write(data.encode('utf-8'))
     except KeyError:
         # If they key didn't exist then there is nothing to remove.
@@ -52,8 +69,20 @@ def record_deployed_values(deployed_values, filename):
             final_values = json.load(f)
     final_values.update(deployed_values)
     with open(filename, 'wb') as f:
-        data = json.dumps(final_values, indent=2, separators=(',', ': '))
+        data = serialize_to_json(final_values)
         f.write(data.encode('utf-8'))
+
+
+def serialize_to_json(data):
+    # type: (Any) -> str
+    """Serialize to pretty printed JSON.
+
+    This includes using 2 space indentation, no trailing whitespace, and
+    including a newline at the end of the JSON document.  Useful when you want
+    to serialize JSON to disk.
+
+    """
+    return json.dumps(data, indent=2, separators=(',', ': ')) + '\n'
 
 
 def create_zip_file(source_dir, outfile):
@@ -78,6 +107,10 @@ def create_zip_file(source_dir, outfile):
 class OSUtils(object):
     ZIP_DEFLATED = zipfile.ZIP_DEFLATED
 
+    def environ(self):
+        # type: () -> MutableMapping
+        return os.environ
+
     def open(self, filename, mode):
         # type: (str, str) -> IO
         return open(filename, mode)
@@ -100,13 +133,18 @@ class OSUtils(object):
         # type: (str) -> bool
         return os.path.isfile(filename)
 
-    def get_file_contents(self, filename, binary=True):
-        # type: (str, bool) -> str
+    def get_file_contents(self, filename, binary=True, encoding='utf-8'):
+        # type: (str, bool, Any) -> str
+        # It looks like the type definition for io.open is wrong.
+        # the encoding arg is unicode, but the actual type is
+        # Optional[Text].  For now we have to use Any to keep mypy happy.
         if binary:
             mode = 'rb'
+            # In binary mode the encoding is not used and most be None.
+            encoding = None
         else:
             mode = 'r'
-        with open(filename, mode) as f:
+        with io.open(filename, mode, encoding=encoding) as f:
             return f.read()
 
     def set_file_contents(self, filename, contents, binary=True):

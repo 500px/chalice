@@ -98,6 +98,7 @@ def config_obj(sample_app):
     config = Config.create(
         chalice_app=sample_app,
         stage='dev',
+        api_gateway_stage='api',
     )
     return config
 
@@ -128,7 +129,7 @@ def test_api_gateway_deployer_initial_deploy(config_obj, ui):
     assert isinstance(first_arg, dict)
     assert 'swagger' in first_arg
 
-    aws_client.deploy_rest_api.assert_called_with('rest-api-id', 'dev')
+    aws_client.deploy_rest_api.assert_called_with('rest-api-id', 'api')
     aws_client.add_permission_for_apigateway_if_needed.assert_called_with(
         'func-name', 'us-west-2', 'account-id', 'rest-api-id', mock.ANY
     )
@@ -140,7 +141,7 @@ def test_api_gateway_deployer_redeploy_api(config_obj, ui):
     # The rest_api_id does not exist which will trigger
     # the initial import
     deployed = DeployedResources(
-        None, None, None, 'existing-id', 'dev', None, None, {})
+        None, None, None, 'existing-id', 'api', None, None, {})
     aws_client.rest_api_exists.return_value = True
     lambda_arn = 'arn:aws:lambda:us-west-2:account-id:function:func-name'
 
@@ -153,7 +154,7 @@ def test_api_gateway_deployer_redeploy_api(config_obj, ui):
     assert isinstance(second_arg, dict)
     assert 'swagger' in second_arg
 
-    aws_client.deploy_rest_api.assert_called_with('existing-id', 'dev')
+    aws_client.deploy_rest_api.assert_called_with('existing-id', 'api')
     aws_client.add_permission_for_apigateway_if_needed.assert_called_with(
         'func-name', 'us-west-2', 'account-id', 'existing-id', mock.ANY
     )
@@ -164,7 +165,7 @@ def test_api_gateway_deployer_delete(config_obj, ui):
 
     rest_api_id = 'abcdef1234'
     deployed = DeployedResources(
-        None, None, None, rest_api_id, 'dev', None, None, {})
+        None, None, None, rest_api_id, 'api', None, None, {})
     aws_client.rest_api_exists.return_value = True
 
     d = APIGatewayDeployer(aws_client, ui)
@@ -178,7 +179,7 @@ def test_api_gateway_deployer_delete_already_deleted(ui):
     aws_client.delete_rest_api.side_effect = ResourceDoesNotExistError(
         rest_api_id)
     deployed = DeployedResources(
-        None, None, None, rest_api_id, 'dev', None, None, {})
+        None, None, None, rest_api_id, 'api', None, None, {})
     aws_client.rest_api_exists.return_value = True
     d = APIGatewayDeployer(aws_client, ui)
     d.delete(deployed)
@@ -826,6 +827,26 @@ def test_lambda_deployer_delete(ui):
     aws_client.delete_role.assert_called_with('role_name')
 
 
+def test_lambda_deployer_delete_rule(ui):
+    aws_client = mock.Mock(spec=TypedAWSClient)
+    aws_client.get_role_arn_for_name.return_value = 'arn_prefix/role_name'
+    lambda_function_name = 'api-handler'
+    deployed = DeployedResources(
+        'api', 'api_handler_arn/lambda_name', lambda_function_name,
+        None, 'dev', None, None, {'name': {'arn': 'schedule-arn',
+                                           'type': 'scheduled_event'}})
+    ui.confirm.return_value = True
+    d = LambdaDeployer(
+        aws_client, None, ui, None, None)
+    d.delete(deployed)
+
+    assert aws_client.delete_function.call_args_list == [
+        mock.call('api-handler'),
+        mock.call('schedule-arn'),
+    ]
+    aws_client.delete_rule.assert_called_with(rule_name='name')
+
+
 def test_lambda_deployer_delete_already_deleted(ui):
     lambda_function_name = 'lambda_name'
     aws_client = mock.Mock(spec=TypedAWSClient)
@@ -844,6 +865,44 @@ def test_lambda_deployer_delete_already_deleted(ui):
     assert ("No lambda function named %s found.\n" %
             lambda_function_name in output)
     aws_client.delete_function.assert_called_with(lambda_function_name)
+
+
+def test_can_reject_policy_change(sample_app, ui):
+    app_policy = mock.Mock(spec=ApplicationPolicyHandler)
+    app_policy.generate_policy_from_app_source.return_value = {
+        'Statement': [{'policy': 1}, {'policy': 2}],
+    }
+    osutils = InMemoryOSUtils({'packages.zip': b'package contents'})
+    aws_client = mock.Mock(spec=TypedAWSClient)
+    packager = mock.Mock(spec=LambdaDeploymentPackager)
+    aws_client.get_role_arn_for_name.side_effect = ResourceDoesNotExistError(
+        'function-name')
+
+    cfg = Config.create(
+        chalice_stage='dev',
+        chalice_app=sample_app,
+        manage_iam_role=True,
+        app_name='appname',
+        project_dir='.',
+    )
+    ui.confirm.side_effect = RuntimeError("Aborted")
+
+    d = LambdaDeployer(aws_client, packager, ui, osutils, app_policy)
+    with pytest.raises(RuntimeError):
+        d.deploy(cfg, existing_resources=None, stage_name='dev')
+    # Assert the policy was written to stdout
+    ui.write.assert_called_with(
+        '{\n'
+        '  "Statement": [\n'
+        '    {\n'
+        '      "policy": 1\n'
+        '    },\n'
+        '    {\n'
+        '      "policy": 2\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+    )
 
 
 def test_prompted_on_runtime_change_can_reject_change(app_policy, sample_app,

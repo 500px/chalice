@@ -5,10 +5,73 @@ CHANGELOG
 Next Release (TBD)
 ==================
 
+* Default to ``None`` in local mode when no query parameters
+  are provided
+  (`#593 <https://github.com/aws/chalice/issues/593>`__)
+* Add support for binding a custom address for local dev server
+  (`#596 <https://github.com/aws/chalice/issues/596>`__)
+* Fix local mode handling of routes with trailing slashes
+  (`#582 <https://github.com/aws/chalice/issues/582>`__)
+* Scale ``lambda_timeout`` parameter correctly in local mode
+  (`#579 <https://github.com/aws/chalice/pull/579`>__)
+
+
+1.0.4
+=====
+
+* Fix issue deploying some packages in Windows with utf-8 characters
+  (`#560 <https://github.com/aws/chalice/pull/560>`__)
+* Add support for custom authorizers with ``chalice package``
+  (`#580 <https://github.com/aws/chalice/pull/580>`__)
+
+
+1.0.3
+=====
+
+* Fix issue with some packages with `-` or `.` in their distribution name
+  (`#555 <https://github.com/aws/chalice/pull/555>`__)
+* Fix issue where chalice local returned a 403 for successful OPTIONS requests
+  (`#554 <https://github.com/aws/chalice/pull/554>`__)
+* Fix issue with chalice local mode causing http clients to hang on responses
+  with no body
+  (`#525 <https://github.com/aws/chalice/issues/525>`__)
+* Add ``--stage`` parameter to ``chalice local``
+  (`#545 <https://github.com/aws/chalice/issues/545>`__)
+* Fix issue with analyzer that followed recursive functions infinitely
+  (`#531 <https://github.com/aws/chalice/issues/531>`__)
+
+
+1.0.2
+=====
+
+* Fix issue where requestParameters were not being mapped
+  correctly resulting in invalid generated javascript SDKs
+  (`#498 <https://github.com/aws/chalice/issues/498>`__)
+* Fix issue where ``api_gateway_stage`` was being
+  ignored when set in the ``config.json`` file
+  (`#495 <https://github.com/aws/chalice/issues/495>`__)
+* Fix bug where ``raw_body`` would raise an exception if no HTTP
+  body was provided
+  (`#503 <https://github.com/aws/chalice/issues/503>`__)
+* Fix bug where exit codes were not properly being propagated during packaging
+  (`#500 <https://github.com/aws/chalice/issues/500>`__)
+* Add support for Builtin Authorizers in local mode
+  (`#404 <https://github.com/aws/chalice/issues/404>`__)
+* Fix environment variables being passed to subprocess while packaging
+  (`#501 <https://github.com/aws/chalice/issues/501>`__)
+* Allow view to require API keys as well as authorization
+  (`#473 <https://github.com/aws/chalice/pull/473/>`__)
+
+
+1.0.1
+=====
+
 * Only use alphanumeric characters for event names in SAM template
   (`#450 <https://github.com/aws/chalice/issues/450>`__)
 * Print useful error message when config.json is invalid
   (`#458 <https://github.com/aws/chalice/pull/458>`__)
+* Fix api gateway stage being set incorrectly in non-default chalice stage
+ (`#$70 <https://github.com/aws/chalice/issues/470>`__)
 
 
 1.0.0
